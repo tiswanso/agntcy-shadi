@@ -70,6 +70,13 @@ enum Cmd {
         #[arg(long, env = "SHADI_ADMISSION_POLICY")]
         admission_policy: Option<PathBuf>,
 
+        /// Start `--a2a-listen` with no admission gate (neither
+        /// `--admission-policy` nor `SHADI_MEMBER_HUMAN_DIDS`): any caller
+        /// that proves a DID is admitted. Only for a loopback listener; for
+        /// demos and local development.
+        #[arg(long)]
+        allow_unauthenticated: bool,
+
         /// Print the full text of every A2A request/response instead of a
         /// truncated one-line preview.
         #[arg(long)]
@@ -470,6 +477,7 @@ fn main() {
             a2a_listen,
             a2a_binding,
             admission_policy,
+            allow_unauthenticated,
             verbose,
             skills,
             domains,
@@ -584,6 +592,7 @@ fn main() {
                     a2a_binding,
                     publish_opts,
                     admission_policy.as_deref(),
+                    allow_unauthenticated,
                     verbose,
                 )
             });

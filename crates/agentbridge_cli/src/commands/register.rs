@@ -63,11 +63,18 @@ pub fn run(
     a2a_binding: A2ABinding,
     dir_publish: Option<DirPublishOptions>,
     admission_policy: Option<&Path>,
+    allow_unauthenticated: bool,
     verbose: bool,
 ) -> anyhow::Result<()> {
     // The gate is built per listener, so with none it would be silently ignored.
     if admission_policy.is_some() && slim_endpoint.is_none() && a2a_listen.is_none() {
         anyhow::bail!("--admission-policy needs --slim-endpoint or --a2a-listen");
+    }
+    if allow_unauthenticated && a2a_listen.is_none() {
+        anyhow::bail!("--allow-unauthenticated needs --a2a-listen (a loopback address)");
+    }
+    if allow_unauthenticated && admission_policy.is_some() {
+        anyhow::bail!("--allow-unauthenticated conflicts with --admission-policy");
     }
     // Coding CLIs are JSON profiles (`ProfileAdapter`). Native modules stay
     // for local handoff/coordinate; register no longer constructs them.
@@ -101,6 +108,7 @@ pub fn run(
                 a2a_binding,
                 dir_publish,
                 admission_policy,
+                allow_unauthenticated,
                 verbose,
             );
         }
@@ -127,6 +135,7 @@ pub fn run(
                     a2a_binding,
                     dir_publish,
                     admission_policy,
+                    allow_unauthenticated,
                     verbose,
                 )?;
             } else {
@@ -170,6 +179,7 @@ fn serve_registered(
     a2a_binding: A2ABinding,
     dir_publish: Option<DirPublishOptions>,
     admission_policy: Option<&Path>,
+    allow_unauthenticated: bool,
     verbose: bool,
 ) -> anyhow::Result<()> {
     if slim_endpoint.is_none() && a2a_listen.is_none() {
@@ -194,6 +204,7 @@ fn serve_registered(
         a2a_binding,
         dir_publish,
         admission_policy,
+        allow_unauthenticated,
         verbose,
     )
 }
@@ -206,6 +217,7 @@ fn start_listeners(
     a2a_binding: A2ABinding,
     dir_publish: Option<DirPublishOptions>,
     admission_policy: Option<&Path>,
+    allow_unauthenticated: bool,
     verbose: bool,
 ) -> anyhow::Result<()> {
     // Don't announce an instance that can't start: the A2A address must be
@@ -271,6 +283,7 @@ fn start_listeners(
                     None,
                     false,
                     http_policy.as_deref(),
+                    allow_unauthenticated,
                     verbose,
                 );
                 let binding = a2a_binding.as_protocol_binding();
@@ -307,6 +320,7 @@ fn start_listeners(
                 dir_publish.as_ref(),
                 true,
                 admission_policy,
+                allow_unauthenticated,
                 verbose,
             )
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -376,8 +390,17 @@ impl CredentialGate {
 fn credential_gate(
     policy: Option<&Path>,
     listener_did: &str,
+    allow_unauthenticated: bool,
 ) -> Result<Option<Arc<CredentialGate>>, String> {
     let Some(path) = policy else {
+        // Explicit opt-in, already checked to be a loopback unicast listener.
+        if allow_unauthenticated {
+            eprintln!(
+                "[agentbridge] WARNING: --allow-unauthenticated: this loopback listener admits \
+                 any caller that proves a DID; there is no credential or human binding."
+            );
+            return Ok(None);
+        }
         // With neither gate, admission is "prove the DID you claim" and
         // nothing else — anyone can mint one for free. Refuse to start
         // rather than let that pass for an unconfigured listener.
@@ -1247,7 +1270,7 @@ fn run_slim_listener(
         app.notification_receiver(),
         Some(slim_bindings::get_runtime()),
     ));
-    let gate = credential_gate(admission_policy, &did)?;
+    let gate = credential_gate(admission_policy, &did, false)?;
     let ready = Arc::new(Notify::new());
     // Cloned before the move below so shutdown can still reach the adapter
     // to kill whatever child process its current message is running.
@@ -1729,12 +1752,18 @@ fn run_unicast_listener(
     dir_publish: Option<&DirPublishOptions>,
     register_locally: bool,
     admission_policy: Option<&Path>,
+    allow_unauthenticated: bool,
     verbose: bool,
 ) -> Result<(), String> {
     require_sandbox_enforced(agent_id, listen)?;
     let addr: SocketAddr = listen.parse().map_err(|e| {
         format!("invalid --a2a-listen '{listen}' (expected host:port): {e}")
     })?;
+    if allow_unauthenticated && !is_loopback_addr(&addr) {
+        return Err(format!(
+            "--allow-unauthenticated is only for loopback listeners; {addr} is not loopback"
+        ));
+    }
 
     let did = shadi_identity::agent_identity_from_env(agent_id)
         .map_err(|e| format!("A2A {} auth error: {e}", a2a_binding.as_protocol_binding()))?
@@ -1775,7 +1804,7 @@ fn run_unicast_listener(
         }
     }
 
-    let gate = credential_gate(admission_policy, &did)?;
+    let gate = credential_gate(admission_policy, &did, allow_unauthenticated)?;
     let ready = Arc::new(Notify::new());
     let adapter_for_shutdown = Arc::clone(&adapter);
     let handler = Arc::new(AgentBridgeRequestHandler::new(
@@ -2006,7 +2035,7 @@ mod tests {
 
     #[test]
     fn unknown_tool_lists_profiles_and_generic_stdio() {
-        let err = run("gemini", None, &[], None, None, A2ABinding::Grpc, None, None, false)
+        let err = run("gemini", None, &[], None, None, A2ABinding::Grpc, None, None, false, false)
             .expect_err("no gemini profile");
         let msg = err.to_string();
         assert!(msg.contains("claude-code"));
@@ -3363,7 +3392,7 @@ test push ... FAILED
     #[test]
     fn a_gate_needs_the_listener_to_have_a_did() {
         let (dir, _) = gate_fixture();
-        let err = credential_gate(Some(&dir.path().join("policy.json")), "").err();
+        let err = credential_gate(Some(&dir.path().join("policy.json")), "", false).err();
         assert!(err.is_some());
     }
 
@@ -3379,11 +3408,26 @@ test push ... FAILED
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let prev = std::env::var_os("SHADI_MEMBER_HUMAN_DIDS");
         std::env::remove_var("SHADI_MEMBER_HUMAN_DIDS");
-        let err = match credential_gate(None, LISTENER_DID) {
+        let err = match credential_gate(None, LISTENER_DID, false) {
             Err(err) => err,
             Ok(_) => panic!("open admission must be refused"),
         };
         assert!(err.contains("SHADI_MEMBER_HUMAN_DIDS"), "{err}");
+        match prev {
+            Some(v) => std::env::set_var("SHADI_MEMBER_HUMAN_DIDS", v),
+            None => std::env::remove_var("SHADI_MEMBER_HUMAN_DIDS"),
+        }
+    }
+
+    #[test]
+    fn allow_unauthenticated_starts_with_no_gate_and_no_allowlist() {
+        let _guard = HUMAN_DIDS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let prev = std::env::var_os("SHADI_MEMBER_HUMAN_DIDS");
+        std::env::remove_var("SHADI_MEMBER_HUMAN_DIDS");
+        let gate = credential_gate(None, LISTENER_DID, true).unwrap();
+        assert!(gate.is_none());
         match prev {
             Some(v) => std::env::set_var("SHADI_MEMBER_HUMAN_DIDS", v),
             None => std::env::remove_var("SHADI_MEMBER_HUMAN_DIDS"),
@@ -3397,7 +3441,7 @@ test push ... FAILED
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let prev = std::env::var_os("SHADI_MEMBER_HUMAN_DIDS");
         std::env::set_var("SHADI_MEMBER_HUMAN_DIDS", "did:key:human");
-        let gate = credential_gate(None, LISTENER_DID).unwrap();
+        let gate = credential_gate(None, LISTENER_DID, false).unwrap();
         assert!(gate.is_none());
         match prev {
             Some(v) => std::env::set_var("SHADI_MEMBER_HUMAN_DIDS", v),

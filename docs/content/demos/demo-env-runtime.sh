@@ -5,7 +5,8 @@ export SLIM_HUMAN_SEED="shadi-runtime-demo-human-root-secret"
 # The only DID the demo agents accept tasks from over SLIM: the "avatar" agent
 # derived from the seed above (what `agentbridge delegate` signs as). It isn't
 # an allowlist for `--a2a-listen` listeners, which accept any DID that proves
-# itself unless SHADI_MEMBER_HUMAN_DIDS is set (agntcy/shadi#500). Re-derive
+# itself unless SHADI_MEMBER_HUMAN_DIDS is set (agntcy/shadi#500); the demo's
+# loopback listeners pass --allow-unauthenticated to start without a gate. Re-derive
 # with `/slim whoami` if you change the seed.
 export SLIM_MEMBER_DIDS="did:key:z6Mkf19ViBaFJEbgVNY9oWqED71Wnr4kYLQiwvYbtEnEGHJC"
 
@@ -19,9 +20,9 @@ mkdir -p "$SHADI_TMP_DIR/work"
 export SHADI_TMP_DIR="$(cd "$SHADI_TMP_DIR" && pwd -P)"
 
 # dirctl with runtime discovery, for you and for agentbridge inside the sandbox
-export DIRCTL="${DIRCTL:-$HOME/go/bin/dirctl-dev}"
+export DIRCTL="${DIRCTL:-/opt/homebrew/bin/dirctl}"
 export SHADI_DIRCTL_BINARY="$DIRCTL"
-export DIRECTORY_CLIENT_SERVER_ADDRESS=localhost:8888
+export DIRECTORY_CLIENT_SERVER_ADDRESS=localhost:9999
 
 # What the agent terminals grant to the sandbox (--read ~/.dir
 # --read ~/.config/dirctl, --write .../workloads.d): shadictl refuses a path

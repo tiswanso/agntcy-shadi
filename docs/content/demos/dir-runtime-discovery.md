@@ -49,24 +49,21 @@ the skills it was given, so nothing here spends tokens.
 
 ## Prerequisites
 
-1. Build the CLIs
+1. Clone repos `agntcy/shadi` and `agntcy/dir` into the same base path
+
+2. Build the `shadictl` and `agentbridge` CLIs
 
     ```bash
     cargo build -p agntcy-shadi-cli -p agntcy-agentbridge-cli
     ```
 
-2. Build dirctl with runtime discovery (dirctl daemon + dirctl runtime list)
-
-    ```bash
-    git clone https://github.com/agntcy/dir.git ../dir
-    (cd ../dir/cli && go build -o "$HOME/go/bin/dirctl-dev" .)
-    ```
+3. Install `dirctl` v1.9.0+: [instructions](https://dir.agntcy.org/latest/dir/dir-quickstart/#install-the-cli)
 
 `dirctl runtime list` and process discovery in `dirctl daemon` ship with Directory
 1.8.0. The JSON output used here
 ([agntcy/dir#2366](https://github.com/agntcy/dir/pull/2366)) and the clean-up
 of stale descriptors ([agntcy/dir#2373](https://github.com/agntcy/dir/pull/2373))
-are on `main` but not in a release yet, so build `dirctl` from `main` as above.
+ship with Directory [1.9.0](https://github.com/agntcy/dir/releases/tag/v1.9.0).
 
 !!! note "Runtime discovery is local for now"
     The runtime discovery API is served by `dirctl daemon`, which runs Directory's
@@ -75,7 +72,7 @@ are on `main` but not in a release yet, so build `dirctl` from `main` as above.
     ([agntcy/dir#2309](https://github.com/agntcy/dir/issues/2309)), so `dirctl runtime list` against it answers
     `Unimplemented`. Everything below uses a local `dirctl daemon`.
 
-!!! note "Build dirctl outside /tmp"
+!!! note "Install dirctl outside /tmp"
     The SHADI sandbox refuses to run programs through the `/tmp` symlink, so a
     `dirctl` there fails inside `shadictl` with `Operation not permitted`. Use
     a path under `$HOME` (as above) or `/private/tmp/…`.
@@ -96,9 +93,10 @@ In fish, start a shell that inherits it with
   `SLIM_MEMBER_DIDS` with the `avatar` DID `agentbridge delegate` signs as.
   It restricts SLIM sessions only: an `--a2a-listen` listener checks just the
   DID proof on a message, so it runs a task from any self-signed `did:key`
-  ([shadi#500](https://github.com/agntcy/shadi/issues/500)). Keep unicast
-  listeners on loopback, as here, or set `SHADI_MEMBER_HUMAN_DIDS` to require a
-  binding from a listed human.
+  ([shadi#500](https://github.com/agntcy/shadi/issues/500)). A listener
+  refuses to start with no gate, so the demo's loopback listeners pass
+  `--allow-unauthenticated` (loopback only). Anywhere else, use
+  `--admission-policy` or `SHADI_MEMBER_HUMAN_DIDS`.
 - **`SHADI_TMP_DIR`**, the demo's working state, as a real path: each run's
   harness configuration (`agentbridge-record/`), the registry of local
   listeners (`agentbridge-local/`) and the harnesses' work directory
@@ -127,7 +125,7 @@ source docs/content/demos/demo-env-runtime.sh
 DIRECTORY_DAEMON_RUNTIME_ENABLED=true "$DIRCTL" daemon start
 ```
 
-The daemon serves Directory on `localhost:8888` and discovers workloads in two
+The daemon serves Directory on `${DIRECTORY_CLIENT_SERVER_ADDRESS}` and discovers workloads in two
 runtimes: Docker containers, and host processes that write a descriptor to
 `~/.agntcy/dir-runtime/workloads.d`. If pushes fail with `403 Forbidden` on
 macOS, see the
@@ -142,6 +140,7 @@ classes chosen by the static enricher (no LLM needed). 1.1.0 is the OASF
 version agentbridge advertises, so the record's classes join the agent's card.
 
 ```bash
+# note: this step requires the agntcy/dir repo is pulled into $PWD/../dir
 cat > "$SHADI_TMP_DIR/import-code-review.yaml" <<EOF
 type: agent-skill
 file_path: $PWD/../dir/tests/e2e/shared/testdata/code-review
@@ -177,12 +176,12 @@ Failed:          0
 source docs/content/demos/demo-env-runtime.sh
 target/debug/shadictl --net-block \
   --net-allow 127.0.0.1:19960 --net-allow schema.oasf.outshift.com:443 \
-  --net-allow localhost:8888 --read ~/.dir --read ~/.config/dirctl \
+  --net-allow ${DIRECTORY_CLIENT_SERVER_ADDRESS} --read ~/.dir --read ~/.config/dirctl \
   --read "$SHADI_DIRCTL_BINARY" \
   --allow "$SHADI_TMP_DIR" --write ~/.agntcy/dir-runtime/workloads.d \
   -- target/debug/agentbridge register --tool fake-harness-isolated \
-     --a2a-listen 127.0.0.1:19960 --a2a-binding http+json \
-     --record code-review --record-server localhost:8888 --dir-announce
+     --a2a-listen 127.0.0.1:19960 --a2a-binding http+json --allow-unauthenticated \
+     --record code-review --record-server ${DIRECTORY_CLIENT_SERVER_ADDRESS} --dir-announce
 ```
 
 ```text
@@ -223,7 +222,7 @@ What happened before the listener started:
 
 The sandbox flags grant exactly that: the listener and the OASF server
 (`--net-allow`), the Directory node and `dirctl`'s own files for `--record`
-(`--net-allow localhost:8888 --read ~/.dir --read ~/.config/dirctl`), the
+(`--net-allow ${DIRECTORY_CLIENT_SERVER_ADDRESS} --read ~/.dir --read ~/.config/dirctl`), the
 `dirctl` binary itself (`--read "$SHADI_DIRCTL_BINARY"`; on Linux, Landlock
 only runs programs under a granted path, and `~/go/bin` isn't one), the
 demo's working state (`--allow "$SHADI_TMP_DIR"`), and the descriptor
@@ -275,8 +274,8 @@ announced (their leases), and every agent the dir-runtime at `--runtime`
 (default `localhost:8888`) reports:
 
 ```bash
-target/debug/agentbridge list
-target/debug/agentbridge list --skill "software_engineering/*"   # only announced agents carry skills
+target/debug/agentbridge list --runtime ${DIRECTORY_CLIENT_SERVER_ADDRESS}
+target/debug/agentbridge list --runtime ${DIRECTORY_CLIENT_SERVER_ADDRESS} --skill "software_engineering/*"   # only announced agents carry skills
 ```
 
 ```text
@@ -303,7 +302,7 @@ later, and with an older one it says so and lists only local listeners.
 **Terminal C:**
 
 ```bash
-target/debug/agentbridge delegate --to fake-harness-isolated "Review: return a / b"
+target/debug/agentbridge delegate --runtime ${DIRECTORY_CLIENT_SERVER_ADDRESS} --to fake-harness-isolated "Review: return a / b"
 ```
 
 ```text
@@ -388,14 +387,14 @@ source docs/content/demos/demo-env-runtime.sh
 export ANTHROPIC_API_KEY=…            # or CLAUDE_CODE_OAUTH_TOKEN=…
 target/debug/shadictl --net-block \
   --net-allow 127.0.0.1:19970 --net-allow schema.oasf.outshift.com:443 \
-  --net-allow localhost:8888 --net-allow api.anthropic.com:443 \
+  --net-allow ${DIRECTORY_CLIENT_SERVER_ADDRESS} --net-allow api.anthropic.com:443 \
   --read ~/.dir --read ~/.config/dirctl --read "$SHADI_DIRCTL_BINARY" \
   --read ~/.local/bin --read ~/.local/share/claude \
   --allow "$SHADI_TMP_DIR" --write ~/.agntcy/dir-runtime/workloads.d \
   -- target/debug/agentbridge register --tool claude-code-isolated \
      --command "$SHADI_TMP_DIR/work" \
-     --a2a-listen 127.0.0.1:19970 --a2a-binding http+json \
-     --record code-review --record-server localhost:8888 --dir-announce
+     --a2a-listen 127.0.0.1:19970 --a2a-binding http+json --allow-unauthenticated \
+     --record code-review --record-server ${DIRECTORY_CLIENT_SERVER_ADDRESS} --dir-announce
 ```
 
 **Terminal R**, codex-isolated:
@@ -405,19 +404,19 @@ source docs/content/demos/demo-env-runtime.sh
 export CODEX_API_KEY=…
 target/debug/shadictl --net-block \
   --net-allow 127.0.0.1:19971 --net-allow schema.oasf.outshift.com:443 \
-  --net-allow localhost:8888 --net-allow api.openai.com:443 \
+  --net-allow ${DIRECTORY_CLIENT_SERVER_ADDRESS} --net-allow api.openai.com:443 \
   --read ~/.dir --read ~/.config/dirctl --read "$SHADI_DIRCTL_BINARY" \
   --allow "$SHADI_TMP_DIR" --write ~/.agntcy/dir-runtime/workloads.d \
   -- target/debug/agentbridge register --tool codex-isolated \
      --command "$SHADI_TMP_DIR/work" \
-     --a2a-listen 127.0.0.1:19971 --a2a-binding http+json \
-     --record code-review --record-server localhost:8888 --dir-announce
+     --a2a-listen 127.0.0.1:19971 --a2a-binding http+json --allow-unauthenticated \
+     --record code-review --record-server ${DIRECTORY_CLIENT_SERVER_ADDRESS} --dir-announce
 ```
 
 **Terminal C:**
 
 ```bash
-target/debug/agentbridge delegate --to claude-code-isolated \
+target/debug/agentbridge delegate --runtime ${DIRECTORY_CLIENT_SERVER_ADDRESS} --to claude-code-isolated \
   "Review this function: def div(a, b): return a / b"
 ```
 
@@ -439,7 +438,7 @@ target/debug/agentbridge delegate --to claude-code-isolated \
     ideally with a spending limit.
     `SLIM_MEMBER_DIDS` limits who can send over SLIM; on unicast only the DID
     proof is checked ([shadi#500](https://github.com/agntcy/shadi/issues/500)),
-    so bind to loopback or set `SHADI_MEMBER_HUMAN_DIDS`. Keeping the credential
+    so keep it on loopback with `--allow-unauthenticated`, or use `--admission-policy` or `SHADI_MEMBER_HUMAN_DIDS`. Keeping the credential
     out of the harness is [shadi#486](https://github.com/agntcy/shadi/issues/486); SHADI's own secrets (such as
     `SLIM_HUMAN_SEED`) are kept out of its environment by [shadi#487](https://github.com/agntcy/shadi/issues/487).
 
@@ -479,7 +478,7 @@ target/debug/shadictl --net-block \
 **Terminal C:**
 
 ```bash
-"$DIRCTL" runtime list --domain "technology/*"
+"$DIRCTL" runtime list --runtime ${DIRECTORY_CLIENT_SERVER_ADDRESS} --domain "technology/*"
 ```
 
 For a gRPC or SLIM listener, which don't serve the card themselves, add a card
@@ -528,7 +527,7 @@ source docs/content/demos/demo-env-dir.sh
 export SHADI_DIRCTL_BINARY="$HOME/go/bin/dirctl-dev"
 target/debug/shadictl slim create-group \
   --members "running:ai_ml_engineering/agent_orchestration/multi_agent_coordination" \
-  --runtime localhost:8888 \
+  --runtime ${DIRECTORY_CLIENT_SERVER_ADDRESS} \
   agntcy/shadi/runtime-room
 ```
 
